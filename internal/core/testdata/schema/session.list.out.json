@@ -137,6 +137,9 @@
           "description": "live",
           "type": "string"
         },
+        "opencode_session_id": {
+          "type": "string"
+        },
         "parent_project_path": {
           "type": "string"
         },

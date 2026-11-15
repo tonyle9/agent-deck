@@ -129,6 +129,8 @@ Both JSON forms always include `account`: the exact stored per-session slot, inc
 
 `list --json`, `list --all --json` and `remote sessions <name> --json` also carry `transcript_path` and the harness native id (`claude_session_id` or `codex_session_id`) when the core knows them. The path belongs to the host that owns the session. A missing field means unknown: the listing never inspects panes or scans conversation bodies to find it, and an SSH session never resolves a transcript on the controller.
 
+`list --json` and `list --all --json` also include `opencode_session_id` when the OpenCode conversation is bound. The field is omitted when unknown.
+
 ### remove - Remove session
 
 ```bash

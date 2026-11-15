@@ -62,8 +62,8 @@ func (i *Instance) DetectOpenCodeSession() {
 // detectOpenCodeSessionAsync detects the OpenCode session ID after startup
 // OpenCode generates session IDs internally (format: ses_XXXXX)
 // We query the managed OpenCode HTTP server (or the bounded compatibility CLI
-// fallback) and match by project directory, picking the most recently updated
-// session since OpenCode auto-resumes the last session.
+// fallback), prefer a unique pane-title match, and exclude other instances'
+// claims before considering the timing fallback.
 func (i *Instance) detectOpenCodeSessionAsync() {
 	time.Sleep(1 * time.Second)
 
@@ -71,12 +71,19 @@ func (i *Instance) detectOpenCodeSessionAsync() {
 	quickDelays := []time.Duration{0, 2 * time.Second, 3 * time.Second, 4 * time.Second, 5 * time.Second}
 
 	for attempt, delay := range quickDelays {
+		// A concurrent status refresh may have completed discovery while this
+		// worker was querying or waiting for the claim lock.
+		i.mu.RLock()
+		alreadyDetected := i.OpenCodeSessionID != ""
+		i.mu.RUnlock()
+		if alreadyDetected {
+			return
+		}
 		if delay > 0 {
 			time.Sleep(delay)
 		}
 
-		if sessionID := i.queryOpenCodeSession(); sessionID != "" {
-			i.setOpenCodeSession(sessionID)
+		if sessionID := i.queryOpenCodeSession(); sessionID != "" && i.setOpenCodeSession(sessionID) {
 			sessionLog.Debug(
 				"opencode_session_detected",
 				slog.String("session_id", sessionID),
@@ -121,8 +128,7 @@ func (i *Instance) watchForOpenCodeSession() {
 			return
 		}
 
-		if sessionID := i.queryOpenCodeSession(); sessionID != "" {
-			i.setOpenCodeSession(sessionID)
+		if sessionID := i.queryOpenCodeSession(); sessionID != "" && i.setOpenCodeSession(sessionID) {
 			sessionLog.Debug(
 				"opencode_watcher_detected",
 				slog.String("session_id", sessionID),
@@ -137,13 +143,10 @@ func (i *Instance) watchForOpenCodeSession() {
 	sessionLog.Debug("opencode_watcher_timeout", slog.Duration("max_duration", maxDuration))
 }
 
-// setOpenCodeSession sets the session ID and stores it in tmux environment.
-func (i *Instance) setOpenCodeSession(sessionID string) {
-	i.mu.Lock()
-	i.setOpenCodeSessionLocked(sessionID)
-	tmuxSession := i.tmuxSession
-	i.mu.Unlock()
-	i.syncOpenCodeSessionEnvironment(tmuxSession, sessionID)
+// setOpenCodeSession claims the session ID and stores it in tmux environment.
+// A rejected claim keeps async discovery retrying instead of stopping early.
+func (i *Instance) setOpenCodeSession(sessionID string) bool {
+	return i.applyOpenCodeSessionCandidate(sessionID)
 }
 
 // setOpenCodeSessionLocked updates in-memory binding state. The caller must
@@ -154,16 +157,19 @@ func (i *Instance) setOpenCodeSessionLocked(sessionID string) {
 	i.OpenCodeStartedAt = 0
 }
 
-func (i *Instance) syncOpenCodeSessionEnvironment(tmuxSession *tmux.Session, sessionID string) {
+func (i *Instance) syncOpenCodeSessionEnvironment(tmuxSession *tmux.Session, sessionID string) bool {
 	if tmuxSession != nil {
 		if err := tmuxSession.SetEnvironment("OPENCODE_SESSION_ID", sessionID); err != nil {
 			sessionLog.Warn("opencode_set_env_failed", slog.String("error", err.Error()))
+			return false
 		}
 	}
+	return true
 }
 
 type openCodeSessionMetadata struct {
 	ID        string `json:"id"`
+	Title     string `json:"title"`
 	Directory string `json:"directory"`
 	Path      string `json:"path"`
 	Created   int64  `json:"created"`
@@ -172,6 +178,7 @@ type openCodeSessionMetadata struct {
 
 type openCodeHTTPSessionMetadata struct {
 	ID        string `json:"id"`
+	Title     string `json:"title"`
 	ParentID  string `json:"parentID"`
 	Directory string `json:"directory"`
 	Path      string `json:"path"`
@@ -191,6 +198,7 @@ func (s openCodeHTTPSessionMetadata) flatten() openCodeSessionMetadata {
 	}
 	return openCodeSessionMetadata{
 		ID:        s.ID,
+		Title:     s.Title,
 		Directory: directory,
 		Path:      s.Path,
 		Created:   s.Time.Created,
@@ -313,11 +321,10 @@ func findBestOpenCodeSession(sessions []openCodeSessionMetadata, projectPath, cu
 	return bestMatch
 }
 
-// queryOpenCodeSession queries the managed OpenCode HTTP server for sessions
-// matching our project directory. Unbound instances adopt the most recently
-// updated session, while already-bound instances keep their current ID as long
-// as it still exists. Instances without a managed port retain a coalesced,
-// rate-limited CLI compatibility path.
+// queryOpenCodeSession queries sessions in our project directory. A unique
+// pane-title match takes precedence; otherwise timing may select an unclaimed
+// session. Claims are checked again atomically when the candidate is applied.
+// Instances without a managed port retain a coalesced, rate-limited CLI path.
 //
 // CLI fallback wall-clock bounds:
 //   - 5s context deadline for the subprocess itself.
@@ -334,7 +341,18 @@ func (i *Instance) queryOpenCodeSession() string {
 	currentID := i.OpenCodeSessionID
 	startedAt := i.OpenCodeStartedAt
 	lastStartedAt := i.LastStartedAt
+	tmuxSession := i.tmuxSession
 	i.mu.RUnlock()
+	excluded, err := openCodePeerIDs(tmuxSession)
+	if err != nil {
+		sessionLog.Debug("opencode_peer_query_failed", slog.String("error", err.Error()))
+		return ""
+	}
+	paneTitle := ""
+	if tmuxSession != nil {
+		paneTitle, _ = tmuxSession.PrimaryPaneTitle()
+	}
+	hasTitle := strings.HasPrefix(paneTitle, "OC | ")
 
 	sharedService := port == 0 && i.openCodeRejectsV1LaunchFlags()
 	var minCreated int64
@@ -361,10 +379,23 @@ func (i *Instance) queryOpenCodeSession() string {
 			return ""
 		}
 	} else {
-		sessions = i.queryOpenCodeSessionsCLI(projectPath, currentID, minCreated)
+		sessions = i.queryOpenCodeSessionsCLI(projectPath, currentID, minCreated, hasTitle || len(excluded) > 0)
 	}
 
 	sessionLog.Debug("opencode_parsed_sessions", slog.Int("count", len(sessions)))
+	if hasTitle {
+		candidate := openCodeSessionByTitle(sessions, projectPath, paneTitle)
+		if excluded[candidate] {
+			return ""
+		}
+		return candidate
+	}
+	available := make([]openCodeSessionMetadata, 0, len(sessions))
+	for _, sess := range sessions {
+		if !excluded[sess.ID] {
+			available = append(available, sess)
+		}
+	}
 
 	var activityAt int64
 	if currentID != "" {
@@ -374,7 +405,7 @@ func (i *Instance) queryOpenCodeSession() string {
 		}
 	}
 
-	bestMatch := findBestOpenCodeSession(sessions, projectPath, currentID, startedAt, activityAt, sharedService)
+	bestMatch := findBestOpenCodeSession(available, projectPath, currentID, startedAt, activityAt, sharedService)
 	sessionLog.Debug(
 		"opencode_best_match",
 		slog.String("session_id", bestMatch),
@@ -416,17 +447,23 @@ func (i *Instance) queryOpenCodeSessionsHTTP(port int, projectPath string) ([]op
 
 	sessions := make([]openCodeSessionMetadata, 0, len(payload))
 	for _, session := range payload {
+		if session.ParentID != "" {
+			continue
+		}
 		sessions = append(sessions, session.flatten())
 	}
 	return sessions, nil
 }
 
 // minCreated is the earliest creation time an unbound 2.x instance may adopt; 0 means any.
-func (i *Instance) queryOpenCodeSessionsCLI(projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
+func (i *Instance) queryOpenCodeSessionsCLI(projectPath, currentID string, minCreated int64, complete ...bool) []openCodeSessionMetadata {
 	cacheKey := i.openCodeForkBinary() + "\x00" + normalizePath(projectPath)
 	if i.openCodeRejectsV1LaunchFlags() {
 		// The 2.x pager stops at what this caller can use, so a page set is only complete for that caller.
 		cacheKey += "\x00" + currentID + "\x00" + strconv.FormatInt(minCreated, 10)
+		if len(complete) > 0 && complete[0] {
+			cacheKey += "\x00complete"
+		}
 	}
 	if sessions, ok := cachedOpenCodeCLISessions(cacheKey); ok {
 		return sessions
@@ -436,7 +473,7 @@ func (i *Instance) queryOpenCodeSessionsCLI(projectPath, currentID string, minCr
 		if sessions, ok := cachedOpenCodeCLISessions(cacheKey); ok {
 			return sessions, nil
 		}
-		sessions := i.runOpenCodeSessionsCLI(projectPath, currentID, minCreated)
+		sessions := i.runOpenCodeSessionsCLI(projectPath, currentID, minCreated, complete...)
 		cacheOpenCodeCLISessions(cacheKey, sessions)
 		return sessions, nil
 	})
@@ -472,7 +509,7 @@ func cacheOpenCodeCLISessions(cacheKey string, sessions []openCodeSessionMetadat
 	}
 }
 
-func (i *Instance) runOpenCodeSessionsCLI(projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
+func (i *Instance) runOpenCodeSessionsCLI(projectPath, currentID string, minCreated int64, complete ...bool) []openCodeSessionMetadata {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -486,7 +523,7 @@ func (i *Instance) runOpenCodeSessionsCLI(projectPath, currentID string, minCrea
 	)
 
 	if v2 {
-		return i.runOpenCodeServiceSessionPages(ctx, projectPath, currentID, minCreated)
+		return i.runOpenCodeServiceSessionPages(ctx, projectPath, currentID, minCreated, complete...)
 	}
 
 	output, ok := i.runOpenCodeCLI(ctx, projectPath, "session", "list", "--format", "json")
@@ -534,8 +571,10 @@ func (i *Instance) runOpenCodeCLI(ctx context.Context, projectPath string, args 
 // instance, else a root created at or after minCreated. Returning before the
 // bound session is seen would rebind to a newer sibling.
 // A failed page, or hitting the page cap before the bound session, returns
-// nothing for the same reason.
-func (i *Instance) runOpenCodeServiceSessionPages(ctx context.Context, projectPath, currentID string, minCreated int64) []openCodeSessionMetadata {
+// nothing for the same reason. Title matching and peer exclusions require a
+// complete listing; in that mode every page must succeed and the cap refuses.
+func (i *Instance) runOpenCodeServiceSessionPages(ctx context.Context, projectPath, currentID string, minCreated int64, complete ...bool) []openCodeSessionMetadata {
+	requireComplete := len(complete) > 0 && complete[0]
 	var sessions []openCodeSessionMetadata
 	cursor := ""
 	usableSeen := false
@@ -560,12 +599,12 @@ func (i *Instance) runOpenCodeServiceSessionPages(ctx context.Context, projectPa
 			}
 		}
 		sessions = append(sessions, roots...)
-		if next == "" || usableSeen {
+		if next == "" || (usableSeen && !requireComplete) {
 			return sessions
 		}
 		cursor = next
 	}
-	if currentID != "" && !usableSeen {
+	if requireComplete || (currentID != "" && !usableSeen) {
 		return nil
 	}
 	return sessions

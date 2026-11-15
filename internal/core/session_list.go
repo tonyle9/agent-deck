@@ -80,6 +80,7 @@ type SessionRow struct {
 	Supersedes        string         `json:"supersedes,omitempty" doc:"live"`
 	CodexSessionID    string         `json:"codex_session_id,omitempty"`
 	ClaudeSessionID   string         `json:"claude_session_id,omitempty"`
+	OpenCodeSessionID string         `json:"opencode_session_id,omitempty"`
 	TranscriptPath    string         `json:"transcript_path,omitempty"`
 	ResolvedCodexHome string         `json:"resolved_codex_home,omitempty"`
 	LastActivityAt    string         `json:"last_activity_at,omitempty" doc:"live"`
@@ -174,6 +175,7 @@ func staticSessionRow(inst *session.Instance, instances []*session.Instance, pro
 		SSHRemotePath:     inst.SSHRemotePath,
 		CodexSessionID:    inst.CodexSessionID,
 		ClaudeSessionID:   inst.ClaudeSessionID,
+		OpenCodeSessionID: inst.OpenCodeSessionID,
 		TranscriptPath:    transcripts[inst],
 		ResolvedCodexHome: inst.ResolvedCodexHome(),
 		IntendedSwitch:    inst.ActiveIntendedSwitchJSON(time.Now()),

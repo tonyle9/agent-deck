@@ -480,12 +480,22 @@ func ListAgentDeckSessionsOnSocket(socket string) ([]string, error) {
 // owner. So the global value is read once, and every row that merely echoes
 // it is resolved with the per-session read the old code used for all rows.
 func ListAgentDeckCodexSessionIDsOnSocket(socket string) (map[string]string, error) {
-	output, err := runBoundedOutput(socket, "list-sessions", "-F", "#{session_name}\t#{CODEX_SESSION_ID}")
+	return listAgentDeckSessionIDsOnSocket(socket, "CODEX_SESSION_ID", "Codex")
+}
+
+// ListAgentDeckOpenCodeSessionIDsOnSocket returns session-local claims, excluding
+// inherited global environment values in the same way as Codex discovery.
+func ListAgentDeckOpenCodeSessionIDsOnSocket(socket string) (map[string]string, error) {
+	return listAgentDeckSessionIDsOnSocket(socket, "OPENCODE_SESSION_ID", "OpenCode")
+}
+
+func listAgentDeckSessionIDsOnSocket(socket, key, tool string) (map[string]string, error) {
+	output, err := runBoundedOutput(socket, "list-sessions", "-F", "#{session_name}\t#{"+key+"}")
 	if err != nil {
 		if strings.Contains(err.Error(), "no server running") || strings.Contains(err.Error(), "no sessions") {
 			return map[string]string{}, nil
 		}
-		return nil, fmt.Errorf("failed to list Codex session bindings: %w", err)
+		return nil, fmt.Errorf("failed to list %s session bindings: %w", tool, err)
 	}
 	bindings := make(map[string]string)
 	for _, line := range strings.Split(strings.TrimSuffix(string(output), "\n"), "\n") {
@@ -494,7 +504,7 @@ func ListAgentDeckCodexSessionIDsOnSocket(socket string) (map[string]string, err
 		}
 		name, id, ok := strings.Cut(line, "\t")
 		if !ok {
-			return nil, fmt.Errorf("malformed Codex session binding row")
+			return nil, fmt.Errorf("malformed %s session binding row", tool)
 		}
 		if strings.HasPrefix(name, SessionPrefix) && id != "" {
 			bindings[name] = id
@@ -503,9 +513,9 @@ func ListAgentDeckCodexSessionIDsOnSocket(socket string) (map[string]string, err
 	if len(bindings) == 0 {
 		return bindings, nil
 	}
-	global, err := globalEnvironmentValue(socket, "CODEX_SESSION_ID")
+	global, err := globalEnvironmentValue(socket, key)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read global Codex session binding: %w", err)
+		return nil, fmt.Errorf("failed to read global %s session binding: %w", tool, err)
 	}
 	if global == "" {
 		return bindings, nil
@@ -517,9 +527,9 @@ func ListAgentDeckCodexSessionIDsOnSocket(socket string) (map[string]string, err
 		// Ambiguous: the session's own environment may hold the same value
 		// (bound by the process that also started the server) or nothing.
 		peer := &Session{Name: name, SocketName: socket}
-		own, err := peer.ReadEnvironment("CODEX_SESSION_ID")
+		own, err := peer.ReadEnvironment(key)
 		if err != nil {
-			return nil, fmt.Errorf("failed to resolve Codex session binding for %s: %w", name, err)
+			return nil, fmt.Errorf("failed to resolve %s session binding for %s: %w", tool, name, err)
 		}
 		if own == "" {
 			delete(bindings, name)

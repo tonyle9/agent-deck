@@ -3278,6 +3278,7 @@ func buildListJSONRows(profileName string, instances, all []*session.Instance, c
 		Supersedes        string    `json:"supersedes,omitempty"`
 		CodexSessionID    string    `json:"codex_session_id,omitempty"`
 		ClaudeSessionID   string    `json:"claude_session_id,omitempty"`
+		OpenCodeSessionID string    `json:"opencode_session_id,omitempty"`
 		TranscriptPath    string    `json:"transcript_path,omitempty"`
 		ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 		// LastActivityAt lets a remote caller (session.RemoteSessionInfo)
@@ -3351,6 +3352,7 @@ func buildListJSONRows(profileName string, instances, all []*session.Instance, c
 			Supersedes:        inst.Supersedes,
 			CodexSessionID:    inst.CodexSessionID,
 			ClaudeSessionID:   inst.ClaudeSessionID,
+			OpenCodeSessionID: inst.OpenCodeSessionID,
 			TranscriptPath:    transcripts[inst],
 			ResolvedCodexHome: inst.ResolvedCodexHome(),
 			LastActivityAt:    inst.DisplayLastActivityTime().Format(time.RFC3339Nano),
@@ -3414,6 +3416,7 @@ func handleListAllProfiles(jsonOutput, includeSuperseded, noArchived bool) {
 			SSHRemotePath     string    `json:"ssh_remote_path,omitempty"`
 			CodexSessionID    string    `json:"codex_session_id,omitempty"`
 			ClaudeSessionID   string    `json:"claude_session_id,omitempty"`
+			OpenCodeSessionID string    `json:"opencode_session_id,omitempty"`
 			TranscriptPath    string    `json:"transcript_path,omitempty"`
 			ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 		}
@@ -3454,6 +3457,7 @@ func handleListAllProfiles(jsonOutput, includeSuperseded, noArchived bool) {
 					SSHRemotePath:     inst.SSHRemotePath,
 					CodexSessionID:    inst.CodexSessionID,
 					ClaudeSessionID:   inst.ClaudeSessionID,
+					OpenCodeSessionID: inst.OpenCodeSessionID,
 					TranscriptPath:    transcripts[inst],
 					ResolvedCodexHome: inst.ResolvedCodexHome(),
 				})

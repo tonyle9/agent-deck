@@ -27,6 +27,16 @@ type PaneInfo struct {
 	Dead           bool
 }
 
+// PrimaryPaneTitle reads the managed agent window on this session's socket,
+// independent of whichever auxiliary window the operator has selected.
+func (s *Session) PrimaryPaneTitle() (string, error) {
+	out, err := s.runBoundedOutput("display-message", "-p", "-t", s.primaryWindowTarget(), "#{pane_title}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // WindowInfo holds basic info about a tmux window within a session.
 type WindowInfo struct {
 	Index    int

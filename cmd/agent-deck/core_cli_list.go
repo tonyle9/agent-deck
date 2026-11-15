@@ -149,6 +149,7 @@ type allProfilesSessionJSON struct {
 	SSHRemotePath     string    `json:"ssh_remote_path,omitempty"`
 	CodexSessionID    string    `json:"codex_session_id,omitempty"`
 	ClaudeSessionID   string    `json:"claude_session_id,omitempty"`
+	OpenCodeSessionID string    `json:"opencode_session_id,omitempty"`
 	TranscriptPath    string    `json:"transcript_path,omitempty"`
 	ResolvedCodexHome string    `json:"resolved_codex_home,omitempty"`
 }
@@ -180,6 +181,7 @@ func renderListAllProfiles(listed core.SessionListOut, jsonOutput bool) {
 					SSHRemotePath:     row.SSHRemotePath,
 					CodexSessionID:    row.CodexSessionID,
 					ClaudeSessionID:   row.ClaudeSessionID,
+					OpenCodeSessionID: row.OpenCodeSessionID,
 					TranscriptPath:    row.TranscriptPath,
 					ResolvedCodexHome: row.ResolvedCodexHome,
 				})

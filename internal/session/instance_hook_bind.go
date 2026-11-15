@@ -651,6 +651,18 @@ func (i *Instance) applyOpenCodeSessionCandidate(candidate string) bool {
 	if candidate == "" {
 		return false
 	}
+	if normalized, err := normalizeToolSessionID(FieldOpenCodeSessionID, candidate); err != nil || normalized != candidate {
+		return false
+	}
+	i.mu.RLock()
+	tmuxSession := i.tmuxSession
+	i.mu.RUnlock()
+	release, err := lockOpenCodeSessionCandidate(tmuxSession, candidate)
+	if err != nil {
+		sessionLog.Debug("opencode_session_claim_refused", slog.String("error", err.Error()))
+		return false
+	}
+	defer release()
 
 	i.mu.Lock()
 	if candidate == i.OpenCodeSessionID {
@@ -679,10 +691,15 @@ func (i *Instance) applyOpenCodeSessionCandidate(candidate string) bool {
 		slog.String("new_id", candidate),
 	)
 
-	i.setOpenCodeSessionLocked(candidate)
-	tmuxSession := i.tmuxSession
 	i.mu.Unlock()
-	i.syncOpenCodeSessionEnvironment(tmuxSession, candidate)
+	// Publish while the claim lock is held, before exposing the new in-memory
+	// binding. Failed publication must not allow a second process to claim it.
+	if !i.syncOpenCodeSessionEnvironment(tmuxSession, candidate) {
+		return false
+	}
+	i.mu.Lock()
+	i.setOpenCodeSessionLocked(candidate)
+	i.mu.Unlock()
 	return true
 }
 
